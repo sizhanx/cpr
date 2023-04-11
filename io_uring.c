@@ -8,4 +8,6 @@ int app_setup_uring(struct submitter *s) {
 
   memset(&p, 0, sizeof(p));
 
+  printf("linking successfull\n");
+  return 0;
 }

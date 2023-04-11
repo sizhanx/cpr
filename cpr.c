@@ -6,5 +6,5 @@
 
 int main() {
   // printf("this is a test\n");
-  
+  app_setup_uring(NULL);
 }
