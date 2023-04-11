@@ -1,4 +1,4 @@
-out = cpr
+out = cpr io_uring.o
 
 all: $(out)
 
