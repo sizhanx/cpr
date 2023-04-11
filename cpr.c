@@ -45,13 +45,16 @@ char *get_last_dir(char *path) {
  * @param dest_path the path that we should replicate the folder to
  */
 void create_folders(char *src_path, char *dest_path) {
-  if (stat(src_path, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+  if (stat(src_path, &sb) != 0 ) {
+    return;
+  }
+  char *src_last_dir = get_last_dir(src_path);
+  if (S_ISDIR(sb.st_mode)) {
     int dest_dir_fd = open(dest_path, O_DIRECTORY);
     if (dest_dir_fd < 0) {
       perror("opening dest dir failed");
       return;
     }
-    char *src_last_dir = get_last_dir(src_path);
     if (strcmp(src_last_dir, ".") == 0 || strcmp(src_last_dir, "..") == 0) return;
     if (mkdirat(dest_dir_fd, src_last_dir, FILE_MODE) < 0) {
       perror("making dir at dest_path failed");
@@ -76,6 +79,14 @@ void create_folders(char *src_path, char *dest_path) {
     }
     free(new_dest_path);
     free(src_last_dir);
+  } else if (S_ISREG(sb.st_mode)) {
+    char* dest_file_path = malloc(strlen(dest_path) + strlen(src_last_dir) + 2);
+    strcpy(dest_file_path, dest_path);
+    strcpy(dest_file_path + strlen(dest_path), "/");
+    strcpy(dest_file_path + strlen(dest_path) + 1, src_last_dir);
+    int creat_file_fd = creat(dest_file_path, FILE_MODE);
+    fallocate(creat_file_fd, FILE_MODE, 0, sb.st_size);
+    free(dest_file_path);
   }
 }
 
