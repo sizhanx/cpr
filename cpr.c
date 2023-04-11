@@ -85,8 +85,9 @@ void create_folders(char *src_path, char *dest_path) {
     strcpy(dest_file_path + strlen(dest_path), "/");
     strcpy(dest_file_path + strlen(dest_path) + 1, src_last_dir);
     int creat_file_fd = creat(dest_file_path, FILE_MODE);
-    fallocate(creat_file_fd, FILE_MODE, 0, sb.st_size);
+    fallocate(creat_file_fd, 0, 0, sb.st_size);
     free(dest_file_path);
+    close(creat_file_fd);
   }
 }
 
