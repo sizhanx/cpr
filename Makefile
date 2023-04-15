@@ -1,12 +1,17 @@
-out = cpr io_uring.o
+out = cpr
+cc = g++
 
 all: $(out)
 
 clean: 
 	rm $(out)
 
-io_uring: io_uring.c io_uring.h
-	gcc -o io_uring.o -c io_uring.c
 
-cpr: io_uring cpr.c 
-	gcc -g -o cpr cpr.c io_uring.o -luring
+cpr: cpr.cpp
+	$(cc) -g -o cpr_cpp cpr.cpp -luring -lpthread
+
+bitmap_test: bitmap.c bitmap.h
+	$(cc) -g -o bitmap_test bitmap.c
+
+bitmap: bitmap.c bitmap.h
+	$(cc) -g -o bitmap.o -c bitmap.c
