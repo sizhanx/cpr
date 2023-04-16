@@ -1,17 +1,16 @@
-out = cpr
-cc = g++
+OUT=cp_r buf_alloc.o
+CC=g++
+FLAGS=-std=c++11 -g
 
-all: $(out)
+all: $(OUT)
 
 clean: 
-	rm $(out)
+	-rm $(OUT)
+
+buf_alloc: buf_alloc.h buf_alloc.c
+	$(CC) $(FLAGS) -o buf_alloc.o -c buf_alloc.cpp
+	
+cp_r: buf_alloc cp_r.cpp
+	$(CC) $(FLAGS) -o cp_r cp_r.cpp -luring -lpthread
 
 
-cpr: cpr.cpp
-	$(cc) -g -o cpr_cpp cpr.cpp -luring -lpthread
-
-bitmap_test: bitmap.c bitmap.h
-	$(cc) -g -o bitmap_test bitmap.c
-
-bitmap: bitmap.c bitmap.h
-	$(cc) -g -o bitmap.o -c bitmap.c

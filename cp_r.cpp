@@ -6,9 +6,15 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <liburing.h>
+#include <unordered_map>
+#include <unordered_set>
 
 struct stat *st;
+struct io_uring ring;
+std::unordered_map<int, std::unordered_set<int>> src_fd_to_buf_idx;
 const int FILE_MODE = S_IRWXU;
+const size_t QUEUE_DEPTH = 10;
 
 bool is_special_path(const std::string &path) {
   if (path == "." || path == "..")
@@ -42,10 +48,10 @@ void init_folders_files(const std::string &src_path,
       perror("making dir at dest_path failed");
     }
     DIR *src_dir = opendir(src_path.c_str());
-    struct dirent *src_dir_entry = NULL;
+    struct dirent *src_dir_entry = nullptr;
     close(dest_dir_fd);
 
-    while ((src_dir_entry = readdir(src_dir)) != NULL) {
+    while ((src_dir_entry = readdir(src_dir)) != nullptr) {
       std::string new_src_path = std::string(src_path);
       new_src_path += '/';
       new_src_path += src_dir_entry->d_name;
@@ -64,20 +70,38 @@ int main(int argc, char *argv[]) {
   if (argc != 3) {
     puts("cpr: invalid argument number");
     puts("Usage: cpr src_folder dest_folder");
+    return EXIT_FAILURE;
   }
 
   st = new struct stat;
 
   std::string src_abs_path = std::string(argv[1]);
   std::string dest_abs_path = std::string(argv[2]);
+  
+  
 
   if (stat(dest_abs_path.c_str(), st) != 0) {
     if (mkdir(dest_abs_path.c_str(), FILE_MODE) != 0) {
       perror("Failed to make top-level dest directory!");
+      goto error;
     }
   }
 
+  // init liburing stuff......
+  io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
+
+  //launch another thread.....
+
+
   init_folders_files(src_abs_path, dest_abs_path);
+  
 
   delete st;
+  io_uring_queue_exit(&ring);
+
+error:
+  delete st;
+  io_uring_queue_exit(&ring);
+  
+  return EXIT_FAILURE;
 }
