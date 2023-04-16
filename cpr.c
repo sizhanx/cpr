@@ -25,10 +25,8 @@ struct file_info {
     uint32_t is_write;
     uint32_t write_fd;
     uint32_t num_blocks;
-    // uint32_t index;
     struct iovec iovecs[];      /* Referred by readv/writev */
 };
-
 
 char *strcpy_m(const char *src) {
   char *temp = malloc(strlen(src));
@@ -107,7 +105,7 @@ int submit_read_request(char *file_path, size_t size, int dest_fd) {
   /* Set user data */
   io_uring_sqe_set_data(sqe, fi);
   /* Finally, submit the request */
-  io_uring_submit(&ring);
+  // io_uring_submit(&ring);
 
   return 0;
 }
@@ -170,8 +168,8 @@ void create_folders(char *src_path, char *dest_path) {
     strcpy(dest_file_path + strlen(dest_path), "/");
     strcpy(dest_file_path + strlen(dest_path) + 1, src_last_dir);
     // int creat_file_fd = creat(dest_file_path, FILE_MODE);
-    int creat_file_fd = open(dest_file_path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, sb.st_mode);
-    fallocate(creat_file_fd, FALLOC_FL_KEEP_SIZE, 0, sb.st_size);
+    int creat_file_fd = open(dest_file_path, O_WRONLY | O_CREAT | O_TRUNC, sb.st_mode);
+    fallocate(creat_file_fd, 0, 0, sb.st_size);
 
     submit_read_request(src_path, sb.st_size, creat_file_fd);
     num_submitted++;
@@ -197,6 +195,8 @@ int main(int argc, char *argv[]) {
   io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
 
   create_folders(src_abs_path, dest_abs_path);
+  io_uring_submit(&ring);
+
 
   while (num_submitted > num_completed) {
     struct io_uring_cqe *cqe;
