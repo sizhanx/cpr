@@ -164,8 +164,8 @@ void create_folders(char *src_path, char *dest_path) {
     strcpy(dest_file_path + strlen(dest_path), "/");
     strcpy(dest_file_path + strlen(dest_path) + 1, src_last_dir);
     // int creat_file_fd = creat(dest_file_path, FILE_MODE);
-    int creat_file_fd = open(dest_file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    fallocate(creat_file_fd, FALLOC_FL_ZERO_RANGE, 0, sb.st_size);
+    int creat_file_fd = open(dest_file_path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
+    fallocate(creat_file_fd, FALLOC_FL_KEEP_SIZE, 0, sb.st_size);
 
     submit_read_request(src_path, sb.st_size, creat_file_fd);
 
@@ -205,6 +205,8 @@ int main(int argc, char *argv[]) {
   struct file_info *fi = io_uring_cqe_get_data(cqe);
   printf("%s", (char *) (fi->iovecs[0].iov_base));
 
+  io_uring_cqe_seen(&ring, cqe);
+
   submit_write_request(fi->write_fd, fi);
 
   ret = io_uring_wait_cqe(&ring, &cqe);
@@ -216,6 +218,8 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Async writev failed.\n");
     return 1;
   }
+
+  io_uring_cqe_seen(&ring, cqe);
 
 
 
