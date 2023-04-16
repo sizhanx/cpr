@@ -1,3 +1,4 @@
+#include "buf_alloc.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <dirent.h>
@@ -9,10 +10,24 @@
 #include <liburing.h>
 #include <unordered_map>
 #include <unordered_set>
+#include <deque>
+
+constexpr size_t HALF_GIG = 1 << 29;
+
+struct file_info{
+  off_t file_sz = 0;
+  void* buf = nullptr;
+  size_t nbytes = 0;
+  int write_fd = -1;
+  bool is_write = false;
+};
+
 
 struct stat *st;
 struct io_uring ring;
 std::unordered_map<int, std::unordered_set<int>> src_fd_to_buf_idx;
+std::deque<file_info*> free_file_infos;
+std::deque<void*> free_buffer_infos;
 const int FILE_MODE = S_IRWXU;
 const size_t QUEUE_DEPTH = 10;
 
@@ -27,7 +42,7 @@ std::string get_last_dir(const std::string path) {
   return path.substr(last_slash_pos + 1, path.size() - last_slash_pos - 1);
 }
 
-void init_folders_files(const std::string &src_path,
+void do_copy(const std::string &src_path,
                         const std::string &dest_path) {
   if (stat(src_path.c_str(), st) != 0) {
     return;
@@ -55,7 +70,7 @@ void init_folders_files(const std::string &src_path,
       std::string new_src_path = std::string(src_path);
       new_src_path += '/';
       new_src_path += src_dir_entry->d_name;
-      init_folders_files(new_src_path, new_dest_path);
+      do_copy(new_src_path, new_dest_path);
     }
   } else if (S_ISREG(st->st_mode)) {
     int dest_file_fd = creat(new_dest_path.c_str(), FILE_MODE);
@@ -77,8 +92,8 @@ int main(int argc, char *argv[]) {
 
   std::string src_abs_path = std::string(argv[1]);
   std::string dest_abs_path = std::string(argv[2]);
-  
-  
+  file_info* file_infos = new file_info[10];
+  buff_alloc data_buff(HALF_GIG);
 
   if (stat(dest_abs_path.c_str(), st) != 0) {
     if (mkdir(dest_abs_path.c_str(), FILE_MODE) != 0) {
@@ -89,19 +104,24 @@ int main(int argc, char *argv[]) {
 
   // init liburing stuff......
   io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
+  for (int i = 0;i < 10;i++) {
+    free_file_infos.push_back(file_infos + i);
+  }
 
-  //launch another thread.....
+  // allocate the big buffer for copying data, and all those info into a free list
 
-
-  init_folders_files(src_abs_path, dest_abs_path);
-  
+  do_copy(src_abs_path, dest_abs_path);
 
   delete st;
   io_uring_queue_exit(&ring);
+  delete[] file_infos;
+
+  return EXIT_SUCCESS;
 
 error:
   delete st;
   io_uring_queue_exit(&ring);
-  
+  delete[] file_infos;
+
   return EXIT_FAILURE;
 }

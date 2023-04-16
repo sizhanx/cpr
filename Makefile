@@ -7,7 +7,7 @@ all: $(OUT)
 clean: 
 	-rm $(OUT)
 
-buf_alloc: buf_alloc.h buf_alloc.c
+buf_alloc: buf_alloc.cpp buf_alloc.hpp
 	$(CC) $(FLAGS) -o buf_alloc.o -c buf_alloc.cpp
 	
 cp_r: buf_alloc cp_r.cpp
