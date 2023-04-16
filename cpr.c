@@ -16,10 +16,13 @@ struct stat sb;
 
 struct io_uring ring;
 
+uint32_t num_submitted = 0;
+uint32_t num_completed = 0;
+
 
 struct file_info {
     off_t file_sz;
-    uint32_t read_fd;
+    uint32_t is_write;
     uint32_t write_fd;
     uint32_t num_blocks;
     struct iovec iovecs[];      /* Referred by readv/writev */
@@ -93,7 +96,7 @@ int submit_read_request(char *file_path, size_t size, int dest_fd) {
   }
   fi->file_sz = file_sz;
 
-  fi->read_fd = file_fd;
+  fi->is_write = 0;
   fi->write_fd = dest_fd;
   fi->num_blocks = blocks;
 
@@ -110,6 +113,8 @@ int submit_read_request(char *file_path, size_t size, int dest_fd) {
 
 int submit_write_request(int dest_fd, struct file_info *data) {
   struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+
+  data->is_write = 1;
 
   io_uring_prep_writev(sqe, dest_fd, data->iovecs, data->num_blocks, 0);
   io_uring_sqe_set_data(sqe, data);
@@ -168,6 +173,7 @@ void create_folders(char *src_path, char *dest_path) {
     fallocate(creat_file_fd, FALLOC_FL_KEEP_SIZE, 0, sb.st_size);
 
     submit_read_request(src_path, sb.st_size, creat_file_fd);
+    num_submitted++;
 
     free(dest_file_path);
     // close(creat_file_fd);
@@ -192,38 +198,46 @@ int main(int argc, char *argv[]) {
 
   create_folders(src_abs_path, dest_abs_path);
 
-  struct io_uring_cqe *cqe;
-  int ret = io_uring_wait_cqe(&ring, &cqe);
-  if (ret < 0) {
-    perror("io_uring_wait_cqe");
-    return 1;
+  while (num_submitted > num_completed) {
+    struct io_uring_cqe *cqe;
+    int ret = io_uring_wait_cqe(&ring, &cqe);
+    if (ret < 0) {
+      perror("io_uring_wait_cqe");
+      return 1;
+    }
+    if (cqe->res < 0) {
+      fprintf(stderr, "Async operation failed.\n");
+      return 1;
+    }
+    struct file_info *fi = io_uring_cqe_get_data(cqe);
+
+    if (fi->is_write) {
+      num_completed++;
+      close(fi->write_fd);
+    } else {
+      // printf("%s", (char *) (fi->iovecs[0].iov_base));
+      submit_write_request(fi->write_fd, fi);
+    }
+    io_uring_cqe_seen(&ring, cqe);
+
+
+    // ret = io_uring_wait_cqe(&ring, &cqe);
+    // if (ret < 0) {
+    //   perror("io_uring_wait_cqe");
+    //   return 1;
+    // }
+    // if (cqe->res < 0) {
+    //   fprintf(stderr, "Async writev failed.\n");
+    //   return 1;
+    // }
+
+    // io_uring_cqe_seen(&ring, cqe);
+
   }
-  if (cqe->res < 0) {
-    fprintf(stderr, "Async readv failed.\n");
-    return 1;
-  }
-  struct file_info *fi = io_uring_cqe_get_data(cqe);
-  printf("%s", (char *) (fi->iovecs[0].iov_base));
-
-  io_uring_cqe_seen(&ring, cqe);
-
-  submit_write_request(fi->write_fd, fi);
-
-  ret = io_uring_wait_cqe(&ring, &cqe);
-  if (ret < 0) {
-    perror("io_uring_wait_cqe");
-    return 1;
-  }
-  if (cqe->res < 0) {
-    fprintf(stderr, "Async writev failed.\n");
-    return 1;
-  }
-
-  io_uring_cqe_seen(&ring, cqe);
 
 
 
-  close(fi->write_fd);
+  // close(fi->write_fd);
   
   io_uring_queue_exit(&ring);
 
