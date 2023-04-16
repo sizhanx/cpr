@@ -25,6 +25,7 @@ struct file_info {
     uint32_t is_write;
     uint32_t write_fd;
     uint32_t num_blocks;
+    // uint32_t index;
     struct iovec iovecs[];      /* Referred by readv/writev */
 };
 
@@ -193,7 +194,6 @@ int main(int argc, char *argv[]) {
     goto fail;
   }
 
-
   io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
 
   create_folders(src_abs_path, dest_abs_path);
@@ -214,31 +214,15 @@ int main(int argc, char *argv[]) {
     if (fi->is_write) {
       num_completed++;
       close(fi->write_fd);
+      free(fi);
     } else {
       // printf("%s", (char *) (fi->iovecs[0].iov_base));
       submit_write_request(fi->write_fd, fi);
     }
     io_uring_cqe_seen(&ring, cqe);
 
-
-    // ret = io_uring_wait_cqe(&ring, &cqe);
-    // if (ret < 0) {
-    //   perror("io_uring_wait_cqe");
-    //   return 1;
-    // }
-    // if (cqe->res < 0) {
-    //   fprintf(stderr, "Async writev failed.\n");
-    //   return 1;
-    // }
-
-    // io_uring_cqe_seen(&ring, cqe);
-
   }
 
-
-
-  // close(fi->write_fd);
-  
   io_uring_queue_exit(&ring);
 
   free(src_abs_path);
