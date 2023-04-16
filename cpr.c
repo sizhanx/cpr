@@ -170,7 +170,7 @@ void create_folders(char *src_path, char *dest_path) {
     strcpy(dest_file_path + strlen(dest_path), "/");
     strcpy(dest_file_path + strlen(dest_path) + 1, src_last_dir);
     // int creat_file_fd = creat(dest_file_path, FILE_MODE);
-    int creat_file_fd = open(dest_file_path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
+    int creat_file_fd = open(dest_file_path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, sb.st_mode);
     fallocate(creat_file_fd, FALLOC_FL_KEEP_SIZE, 0, sb.st_size);
 
     submit_read_request(src_path, sb.st_size, creat_file_fd);
