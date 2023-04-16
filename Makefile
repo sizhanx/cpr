@@ -7,8 +7,8 @@ all: $(OUT)
 clean: 
 	-rm $(OUT)
 
-buf_alloc: buf_alloc.cpp buf_alloc.hpp
-	$(CC) $(FLAGS) -o buf_alloc.o -c buf_alloc.cpp
+buff_alloc: buff_alloc.cpp buff_alloc.hpp
+	$(CC) $(FLAGS) -o buff_alloc.o -c buff_alloc.cpp
 	
 cp_r: buf_alloc cp_r.cpp
 	$(CC) $(FLAGS) -o cp_r cp_r.cpp -luring -lpthread
