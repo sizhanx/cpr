@@ -4,3 +4,4 @@ io_uring.o
 cat_liburing
 cat_liburing.c
 dest/*
+test/*
