@@ -10,7 +10,7 @@ clean:
 buff_alloc: buff_alloc.cpp buff_alloc.hpp
 	$(CC) $(FLAGS) -o buff_alloc.o -c buff_alloc.cpp
 	
-cp_r: buf_alloc cp_r.cpp
-	$(CC) $(FLAGS) -o cp_r cp_r.cpp -luring -lpthread
+cp_r: buff_alloc cp_r.cpp
+	$(CC) $(FLAGS) -o cp_r cp_r.cpp buff_alloc.o -luring -lpthread
 
 
