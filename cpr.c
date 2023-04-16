@@ -1,15 +1,30 @@
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <fcntl.h>
-#include <linux/io_uring.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <string.h>
 #include <unistd.h>
+#include <liburing.h>
+
+#define QUEUE_DEPTH 4
+#define BLOCK_SZ    1024
 
 const int FILE_MODE = S_IRWXU;
 struct stat sb;
+
+struct io_uring ring;
+
+
+struct file_info {
+    off_t file_sz;
+    uint32_t read_fd;
+    uint32_t write_fd;
+    uint32_t num_blocks;
+    struct iovec iovecs[];      /* Referred by readv/writev */
+};
+
 
 char *strcpy_m(const char *src) {
   char *temp = malloc(strlen(src));
@@ -20,6 +35,8 @@ char *strcpy_m(const char *src) {
   strcpy(temp, src);
   return temp;
 }
+
+
 char *get_last_dir(char *path) {
   size_t len = strlen(path);
   int slash_pos = len - 1;
@@ -36,6 +53,71 @@ char *get_last_dir(char *path) {
   strcpy(last_dir, path + slash_pos + 1);
   return last_dir;
 }
+
+int submit_read_request(char *file_path, size_t size, int dest_fd) {
+  int file_fd = open(file_path, O_RDONLY);
+  if (file_fd < 0) {
+      perror("open");
+      return 1;
+  }
+  off_t file_sz = size;
+  off_t bytes_remaining = file_sz;
+  off_t offset = 0;
+  int current_block = 0;
+  int blocks = (int) file_sz / BLOCK_SZ;
+  if (file_sz % BLOCK_SZ) blocks++;
+  struct file_info *fi = malloc(sizeof(*fi) +
+                                        (sizeof(struct iovec) * blocks));
+  char *buff = malloc(file_sz);
+  if (!buff) {
+      fprintf(stderr, "Unable to allocate memory.\n");
+      return 1;
+  }
+
+  while (bytes_remaining) {
+      off_t bytes_to_read = bytes_remaining;
+      if (bytes_to_read > BLOCK_SZ)
+          bytes_to_read = BLOCK_SZ;
+
+      offset += bytes_to_read;
+      fi->iovecs[current_block].iov_len = bytes_to_read;
+      void *buf;
+      if( posix_memalign(&buf, BLOCK_SZ, BLOCK_SZ)) {
+          perror("posix_memalign");
+          return 1;
+      }
+      fi->iovecs[current_block].iov_base = buf;
+
+      current_block++;
+      bytes_remaining -= bytes_to_read;
+  }
+  fi->file_sz = file_sz;
+
+  fi->read_fd = file_fd;
+  fi->write_fd = dest_fd;
+  fi->num_blocks = blocks;
+
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+    /* Setup a readv operation */
+  io_uring_prep_readv(sqe, file_fd, fi->iovecs, blocks, 0);
+  /* Set user data */
+  io_uring_sqe_set_data(sqe, fi);
+  /* Finally, submit the request */
+  io_uring_submit(&ring);
+
+  return 0;
+}
+
+int submit_write_request(int dest_fd, struct file_info *data) {
+  struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+
+  io_uring_prep_writev(sqe, dest_fd, data->iovecs, data->num_blocks, 0);
+  io_uring_sqe_set_data(sqe, data);
+  io_uring_submit(&ring);
+
+  return 0;
+}
+
 /**
  * @brief
  *
@@ -81,10 +163,14 @@ void create_folders(char *src_path, char *dest_path) {
     strcpy(dest_file_path, dest_path);
     strcpy(dest_file_path + strlen(dest_path), "/");
     strcpy(dest_file_path + strlen(dest_path) + 1, src_last_dir);
-    int creat_file_fd = creat(dest_file_path, FILE_MODE);
-    fallocate(creat_file_fd, 0, 0, sb.st_size);
+    // int creat_file_fd = creat(dest_file_path, FILE_MODE);
+    int creat_file_fd = open(dest_file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    fallocate(creat_file_fd, FALLOC_FL_ZERO_RANGE, 0, sb.st_size);
+
+    submit_read_request(src_path, sb.st_size, creat_file_fd);
+
     free(dest_file_path);
-    close(creat_file_fd);
+    // close(creat_file_fd);
   }
 }
 
@@ -100,18 +186,43 @@ int main(int argc, char *argv[]) {
   if (src_abs_path == NULL || dest_abs_path == NULL) {
     goto fail;
   }
-  // char *ret = get_last_dir(src_abs_path);
-  // printf("%s\n", ret);
-  // free(ret);
+
+
+  io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
+
   create_folders(src_abs_path, dest_abs_path);
-  // //open destination directory
-  // int dest_dir_fd = open(dest_path, O_DIRECTORY);
-  // if (dest_dir_fd == -1) {
-  //   perror("cannot open dest_dir");
-  //   goto fail_with_path;
-  // }
-  // //use mkdirat
-  // mkdirat(dest_dir_fd, src_path, FILE_MODE);
+
+  struct io_uring_cqe *cqe;
+  int ret = io_uring_wait_cqe(&ring, &cqe);
+  if (ret < 0) {
+    perror("io_uring_wait_cqe");
+    return 1;
+  }
+  if (cqe->res < 0) {
+    fprintf(stderr, "Async readv failed.\n");
+    return 1;
+  }
+  struct file_info *fi = io_uring_cqe_get_data(cqe);
+  printf("%s", (char *) (fi->iovecs[0].iov_base));
+
+  submit_write_request(fi->write_fd, fi);
+
+  ret = io_uring_wait_cqe(&ring, &cqe);
+  if (ret < 0) {
+    perror("io_uring_wait_cqe");
+    return 1;
+  }
+  if (cqe->res < 0) {
+    fprintf(stderr, "Async writev failed.\n");
+    return 1;
+  }
+
+
+
+  close(fi->write_fd);
+  
+  io_uring_queue_exit(&ring);
+
   free(src_abs_path);
   free(dest_abs_path);
   return EXIT_SUCCESS;
