@@ -29,6 +29,12 @@ void *buff_alloc::alloc_buf_page() {
   return free_page;
 }
 
+int buff_alloc::get_buf_page_idx(void* ptr) {
+  assert(ptr >= this->buff);
+  assert(ptr < (void *)((size_t)this->buff + total_size));
+  return (int) ((size_t) ((size_t) ptr - (size_t) this->buff ) / PAGE_SIZE);
+}
+
 void buff_alloc::relese_buf_page(void *ptr) {
   assert(ptr >= this->buff);
   assert(ptr < (void *)((size_t)this->buff + total_size));

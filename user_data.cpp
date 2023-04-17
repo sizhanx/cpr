@@ -37,8 +37,25 @@ size_t user_data::file_off_idx() {
 bool user_data::read_done() {
   return (bool) ((this->data >> 1) & BITMASK1);  
 }
+
+void user_data::read_done(bool val) {
+  if (val) {
+    this->data |= 0x2;
+  } else {
+    this->data &= 0xFFFFFFFFFFFFFFFD;
+  }
+}
+
 bool user_data::write_done() {
   return (bool) (this->data & BITMASK1);  
+}
+
+void user_data::write_done(bool val) {
+  if (val) {
+    this->data |= 0x1;
+  } else {
+    this->data &= 0xFFFFFFFFFFFFFFFE;
+  } 
 }
 
 uint64_t user_data::get_data() {

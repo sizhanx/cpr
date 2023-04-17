@@ -17,7 +17,9 @@ public:
   size_t buff_idx();
   size_t file_off_idx();
   bool read_done();
+  void read_done(bool val);
   bool write_done();
+  void write_done(bool val);
 
   uint64_t get_data();
 };
