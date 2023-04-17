@@ -1,4 +1,4 @@
-OUT=cp_r buff_alloc.o user_data.o
+OUT=cp_r buff_alloc.o user_data.o user_data.o
 CC=g++
 FLAGS=-std=c++14 -g -Wall
 
