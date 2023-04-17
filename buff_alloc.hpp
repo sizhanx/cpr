@@ -20,6 +20,7 @@ public:
   ~buff_alloc();
   void* alloc_buf_page();
   void relese_buf_page(void* ptr);
+  bool empty();
 };
 
 #endif
