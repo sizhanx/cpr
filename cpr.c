@@ -8,8 +8,8 @@
 #include <unistd.h>
 #include <liburing.h>
 
-#define QUEUE_DEPTH 8
-#define BLOCK_SZ    4096
+#define QUEUE_DEPTH 4
+#define BLOCK_SZ    65536
 
 const int FILE_MODE = S_IRWXU;
 struct stat sb;
