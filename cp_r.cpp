@@ -37,7 +37,7 @@ std::unordered_map<std::pair<int, int>,
       fd_to_file_idx;
   std::unordered_map<int, std::unordered_set<int>> check_file_done;
 
-
+struct io_uring_cqe** cqe_buff = nullptr;
 
 bool is_special_path(const std::string &path) {
   if (path == "." || path == "..")
@@ -146,10 +146,11 @@ void submit_read(buff_alloc &data_buff, struct io_uring *ring,
 }
 
 void handle_write(
-    buff_alloc *data_buff, struct io_uring *ring, struct io_uring_cqe **cqe_buff,  size_t total_reads) {
+    buff_alloc *data_buff, struct io_uring *ring,  size_t total_reads) {
   size_t num_writes_issued;
   struct io_uring_sqe *sqe = nullptr;
   while (true /*shoud be some condition, but true for now*/) {
+    
     int num_recvd_cqe =
         io_uring_peek_batch_cqe(ring, cqe_buff, IO_URING_CQE_PEEK_COUNT);
     for (int i = 0; i < num_recvd_cqe; i++) {
@@ -234,7 +235,6 @@ int main(int argc, char *argv[]) {
   struct stat
       st; // this stat struct is only used for checking top_level dest folder
   struct io_uring* ring;
-  struct io_uring_cqe *cqe_buff;
   size_t read_submitted = 0;
 
   if (stat(dest_abs_path.c_str(), &st) != 0) {
@@ -251,7 +251,8 @@ int main(int argc, char *argv[]) {
 
   io_uring_queue_init(IO_URING_QUEUE_DEPTH, ring, IO_URING_FLAGS);
 
-  cqe_buff = new struct io_uring_cqe[IO_URING_CQE_PEEK_COUNT];
+  // cqe_buff = new struct io_uring_cqe[IO_URING_CQE_PEEK_COUNT];
+  cqe_buff = (struct io_uring_cqe**) malloc(sizeof(struct io_uring_cqe*) * IO_URING_CQE_PEEK_COUNT);
 
   buff_alloc data_buff(DATA_BUFF_SIZE);
 
@@ -264,7 +265,7 @@ int main(int argc, char *argv[]) {
   // }
   // io_uring_get_sqe(ring);
 
-  std::thread t(handle_write, &data_buff, ring, &cqe_buff, read_submitted);
+  std::thread t(handle_write, &data_buff, ring, read_submitted);
 
   t.join();
 
@@ -274,6 +275,7 @@ int main(int argc, char *argv[]) {
   io_uring_queue_exit(ring);
 
   delete ring;
-  delete[] cqe_buff;
+  // delete[] cqe_buff;
+  free(cqe_buff);
   return EXIT_SUCCESS;
 }
