@@ -1,0 +1,219 @@
+ One thing this writeup made me realize is, if I have a misbehaving I/O system (NFS or remote block device over a flaky network, dying SSD, etc.), in the pre-io_uring world I'd probably see that via /proc/$pid/stack pretty clearly - I'd see a stack with the read syscall, then the particular I/O subsystem, then the physical implementation of that subsystem. Or if I looked at /proc/$pid/syscall I'd see a read call on a certain fd, and I could look in /proc/$pid/fd/ and see which fd it was and where it lived.
+
+However, in the post-io_uring world, I think I won't see that, right? If I understand right, I'll at most see a call to io_uring_enter, and maybe not even that.
+
+How do I tell what a stuck io_uring-using program is stuck on? Is there a way I can see all the pending I/Os and what's going on with them?
+
+How is this implemented internally - does it expand into one kernel thread per I/O, or something? (I guess, if you had a silly filesystem which spent 5 seconds in TASK_UNINTERRUPTIBLE on each read, and you used io_uring to submit 100 reads from it, what actually happens?)
+
+	
+	
+Matthias247 on May 10, 2020 | parent | next [–]
+
+I think that's a very reasonable concern. It however isn't really about io_uring - it applies to all "async" solutions. Even today if you are running async IO in userspace (e.g. using epoll), it's not very obvious where something went wrong, because no task is seemingly blocked. If you attach a debugger, you might most likely see something being blocked on epoll - but a callstack to the problematic application code is nowhere in sight.
+
+Even if pause execution while inside the application code there might not be a great stack which contains all relevant data. It will only contain the information since the last task resumption (e.g. through a callback). Depending on your solution (C callbacks, C++ closures, C# or Kotlin async/await, Rust async/await) the information will be between not very helpful and somewhat understandable, but never on par with a synchronous call.
+
+	
+	
+WGH_ on May 11, 2020 | root | parent | next [–]
+
+> Even today if you are running async IO in userspace (e.g. using epoll), it's not very obvious where something went wrong, because no task is seemingly blocked.
+
+It doesn't apply to file IO, which is never non-blocking, and can't be made async with epoll. Epoll always considers files ready for any IO. And if the device is slow, the thread is blocked with dreaded "D" state.
+
+	
+	
+CodesInChaos on May 12, 2020 | root | parent | next [–]
+
+The fundamental problem is that readiness based async IO and random access to not mix well. You'd need a way to poll readiness for different positions in the same file at the same time.
+
+Completion based async (including io_uring on Linux or IO completion ports on Windows) doesn't suffer from this problem.
+
+	
+	
+Doxin on May 11, 2020 | root | parent | prev | next [–]
+
+> It will only contain the information since the last task resumption
+
+That's an implementation detail though. As far as I'm aware python keeps hold of the stack, so it outputs complete stack traces as you'd expect from synchronous code.
+
+	
+	
+cyphar on May 11, 2020 | parent | prev | next [–]
+
+You would want to start using the more modern debugging tools, namely dynamic tracing tools like bpftrace[1]. Though in fairness, it might be a tad tricky to get a trace for a specific file without some more complicated scripts.
+
+[1]: https://github.com/iovisor/bpftrace
+
+	
+	
+shuss on May 10, 2020 | parent | prev | next [–]
+
+This is such a great point. Never thought how async I/O could be a problem this way. In the SQ polling example, I used BPF to "prove" that the process does not make system calls:
+
+https://unixism.net/loti/tutorial/sq_poll.html
+
+Could be a good idea to use BPF to expose what io_uring is doing. Just a wild thought.
+
+	
+	
+matheusmoreira on May 10, 2020 | parent | prev | next [–]
+
+Good point. Would be great if the submission and completion ring buffers were accessible via procfs.
+
+	
+	
+ecnahc515 on May 11, 2020 | parent | prev | next [–]
+
+Could eBPF be used? I'm really not sure myself.
+
+	
+	
+dirtydroog on May 10, 2020 | parent | prev | next [–]
+
+Use timeouts?
+
+	
+	
+geofft on May 10, 2020 | root | parent | next [–]
+
+How exactly? I/O in TASK_UNINTERRUPTIBLE/TASK_KILLABLE cannot be timed out - so part of my question is how io_uring handles that in general.
+
+	
+	
+cyphar on May 11, 2020 | root | parent | next [–]
+
+If it's just blocked, you could probably look at the io_uring kthreads. But as I mentioned in another comment, bpftrace is probably a more useful tool for things like this (and it's useful for general kernel debugging too!).
+
+	
+	
+tyingq on May 10, 2020 | prev | next [–]
+
+There are some benchmarks that show io_uring as a significant boost over aio: https://www.phoronix.com/scan.php?page=news_item&px=Linux-5....
+
+I see that nginx accepted a pull request to use it, mid last year: https://github.com/hakasenyang/openssl-patch/issues/21
+
+Curious if it's also been adopted by other popular IO intensive software.
+
+	
+	
+shuss on May 10, 2020 | parent | next [–]
+
+Oh, yeah. QEMU 5.0 already uses io_uring. In fact, it uses liburing. Check out the changelog: https://wiki.qemu.org/ChangeLog/5.0
+
+	
+	
+Twirrim on May 10, 2020 | root | parent | next [–]
+
+To save people time, there's a single reference to it on the changelog:
+
+> The file-posix driver can now use the io_uring interface of Linux with aio=io_uring
+
+side note: I did note a change we built made it in to a released version of qemu:
+
+> qemu-img convert -n now understands a --target-is-zero option, which tells it that the target image is completely zero, so it does not need to be zeroed again.
+
+That's saving us so much time and I/O
+
+	
+	
+frevib on May 10, 2020 | parent | prev | next [–]
+
+Echo server benchmarks, io_uring vs epoll: https://github.com/frevib/io_uring-echo-server/blob/io-uring...
+
+	
+	
+tele_ski on May 11, 2020 | root | parent | next [–]
+
+Nice, reading through the epoll implementation shouldn't it re-register to make sure the send() call won't block? Looks like it only non-blocks on the accept socket and then a single read register
+
+	
+	
+frevib on May 13, 2020 | root | parent | next [–]
+
+Could elaborate on “re-register”? It does not do short writes, if that’s what you mean.
+
+	
+	
+tele_ski on May 14, 2020 | root | parent | next [–]
+
+Normally I'd expect an epoll implementation to epoll_ctl to make sure the socket can be written to without blocking. In this benchmark it probably makes no difference but I would think it would make the results a little more inline with a real applications usage of epoll.
+
+	
+	
+frevib on May 15, 2020 | root | parent | next [–]
+
+This a bare minimal echo server for educational purposes. It is not inline with a real world event loop.
+
+	
+	
+tele_ski on May 17, 2020 | root | parent | next [–]
+
+Yeah I understand that, but if you are going for identical performance characteristics of how epoll would normally be used then I would expect it to re-register. Thats all I was getting at.
+
+	
+	
+jandrewrogers on May 10, 2020 | parent | prev | next [–]
+
+I have not adopted io_uring yet because it isn't clear that it will provide useful performance improvements over linux aio in cases where the disk I/O subsystem is already highly optimized. Where io_uring seems to show a benefit relative to linux aio is more naive software design, which adds a lot of value but is a somewhat different value proposition than has been expressed.
+
+For software that is already capable of driving storage hardware at its theoretical limit, the benefit is less immediate and offset by the requirement of having a very recent Linux kernel.
+
+	
+	
+shuss on May 10, 2020 | root | parent | next [–]
+
+For regular files, aio works async only if they are opened in unbuffered mode. I think this is a huge limitation. io_uring on the other hand, can provide a uniform interface for all file descriptors whether they are sockets or regular files. This should be a decent win, IMO.
+
+	
+	
+jandrewrogers on May 10, 2020 | root | parent | next [–]
+
+That was kind of my point. While all of this is true, these are not material limitations for the implementation of high-performance storage engines. For example, using unbuffered file descriptors is a standard design element of databases for performance reasons that remain true.
+
+Being able to drive networking over io_uring would be a big advantage but my understanding from people using it is that part is still a bit broken.
+
+	
+	
+g8oz on May 10, 2020 | root | parent | next [–]
+
+The ScyllaDB developers wrote up their take here: https://www.scylladb.com/2020/05/05/how-io_uring-and-ebpf-wi...
+
+	
+	
+jabl on May 10, 2020 | root | parent | next [–]
+
+Those benchmark results are pretty impressive. In particular, io_uring gets the best performance both when the data is in the page cache and when bypassing the cache.
+
+	
+	
+shuss on May 10, 2020 | root | parent | prev | next [–]
+
+True. Have to agree, here. Although one advantage over aio for block I/O that io_uring will still have is to use polling mode to almost completely avoid system calls.
+
+	
+	
+wbl on May 10, 2020 | root | parent | prev | next [–]
+
+And works is used advisedly. Certain filesystem edge conditions particularly metadata changes due to block allocation can result in blocking behavior.
+
+	
+	
+tyingq on May 10, 2020 | root | parent | prev | next [–]
+
+If I understand the premise right, it should be fewer syscalls per IO. So even if it doesn't improve disk I/O, it might reduce CPU utilization.
+
+	
+	
+matheusmoreira on May 10, 2020 | root | parent | next [–]
+
+It could also be nearly zero system calls per I/O operation. The kernel can poll the submission queue for new entries. This eliminates system call overhead at the cost of higher CPU utilization.
+
+	
+	
+jandrewrogers on May 10, 2020 | root | parent | prev | next [–]
+
+This is true, but for most intentionally optimized storage engines that syscall overhead is below the noise floor in practice, even on NVMe storage. A single core can easily drive gigabytes per second using the old Linux AIO interface.
+
+It appears to primarily be an optimization for storage that wa

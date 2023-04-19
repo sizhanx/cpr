@@ -15,16 +15,19 @@ buff_alloc::buff_alloc(size_t sz)
   void *curr_buff_addr = this->buff;
   for (size_t i = 0; i < total_pages; i++) {
     this->free_page_list.push_back(
-        (void *)((size_t)curr_buff_addr + PAGE_SIZE));
+        (void *)((size_t)curr_buff_addr));
+    curr_buff_addr = (void*) ((size_t) curr_buff_addr +  PAGE_SIZE);
   }
 }
 
 buff_alloc::~buff_alloc() { free(this->buff); }
 
 void *buff_alloc::alloc_buff_page() {
+  void *free_page = nullptr;
+  std::lock_guard<std::shared_timed_mutex> write_lock(m);
   if (this->free_page_list.empty())
     return nullptr;
-  void *free_page = this->free_page_list.front();
+  free_page = this->free_page_list.front();
   this->free_page_list.pop_front();
   return free_page;
 }
@@ -35,16 +38,22 @@ int buff_alloc::get_buff_page_idx(void *ptr) {
   return (int)((size_t)((size_t)ptr - (size_t)this->buff) / PAGE_SIZE);
 }
 
+void* buff_alloc::get_buff_page_addr(int idx) {
+  return ((void *)((size_t)(this->buff) + idx * PAGE_SIZE)); 
+}
+
 void buff_alloc::relese_buff_page(void *ptr) {
   assert(ptr >= this->buff);
   assert(ptr < (void *)((size_t)this->buff + total_size));
+
+  std::lock_guard<std::shared_timed_mutex> write_lock(m);
   size_t diff = ((size_t)ptr) % PAGE_SIZE;
   void *rounded_ptr = (void *)((size_t)ptr - diff);
   this->free_page_list.push_back(rounded_ptr);
 }
 
 void buff_alloc::release_buff_page_by_idx(int idx) {
-  this->get_buff_page_idx((void *)((size_t)(this->buff) + idx * PAGE_SIZE));
+  this->relese_buff_page(this->get_buff_page_addr(idx));
 }
 
 bool buff_alloc::empty() { return this->free_page_list.empty(); }

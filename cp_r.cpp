@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
+#include <cassert>
 
 namespace sizhan {
 typedef std::shared_lock<std::shared_timed_mutex> read_lock;
@@ -102,7 +103,7 @@ void init_folder_files(const std::string &src_path,
     size_t remaining_file_sz = st->st_size;
     int chunk_idx = 0;
     int dest_file_fd = creat(new_dest_path.c_str(), FILE_MODE);
-    fallocate(dest_file_fd, 0, 0, st->st_mode);
+    fallocate(dest_file_fd, 0, 0, st->st_size);
     int src_file_fd = open(src_path.c_str(), O_RDONLY);
     while (remaining_file_sz > 0) {
       fd_to_file_idx[{src_file_fd, dest_file_fd}].first.insert(chunk_idx);
@@ -118,33 +119,7 @@ void init_folder_files(const std::string &src_path,
         }
       }
     }
-    // while (remaining_file_sz > 0) {
-    //   if (free_file_infos.empty())
-    //     continue;
-    //   void *data_buff_addr = data_buff.alloc_buf_page();
-    //   if (data_buff_addr == nullptr)
-    //     continue;
-    //   file_info *curr_file_info = free_file_infos.front();
-    //   free_file_infos.pop_front();
-    //   curr_file_info->is_write = false;
-    //   curr_file_info->buf = data_buff_addr;
-    //   curr_file_info->write_fd = dest_file_fd;
-    //   curr_file_info->file_sz = st->st_size;
-    //   struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-    //   int new_remaining_file_sz = 0;
-    //   if (remaining_file_sz > PAGE_SIZE) {
-    //     curr_file_info->nbytes = PAGE_SIZE;
-    //     new_remaining_file_sz = remaining_file_sz - PAGE_SIZE;
-    //   } else {
-    //     curr_file_info->nbytes = remaining_file_sz;
-    //   }
-    //   io_uring_prep_read(sqe, src_file_fd, data_buff_addr,
-    //                      curr_file_info->nbytes,
-    //                      curr_file_info->file_sz - remaining_file_sz);
-    //   io_uring_sqe_set_data(sqe, curr_file_info);
-    //   if (data_buff.empty()) io_uring_submit(&ring);
-    //   remaining_file_sz = new_remaining_file_sz;
-    // }
+
   }
 }
 
@@ -163,14 +138,13 @@ void submit_read(buff_alloc &data_buff) {
 
     for (int chunk_idx : chunk_set) {
       void *page = nullptr;
-    retry_submit_read : { // scope for RAII lock
-      sizhan::write_lock lock(m);
+    retry_submit_read: // scope for RAII lock
+
       page = data_buff.alloc_buff_page();
       if (page == nullptr) {
         io_uring_submit(&ring);
         goto retry_submit_read;
       }
-    }
 
       size_t read_len = chunk_idx == chunk_set_size - 1
                             ? remainder_size == 0 ? PAGE_SIZE : remainder_size
@@ -203,35 +177,54 @@ void handle_write(buff_alloc *data_buff) {
          *
          */
         //  std::shared_lock<std::shared_timed_mutex> read_lock(m);
+        
         struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-
+        auto info = fd_to_file_idx[{ud.src_fd(), ud.dest_fd()}];
+        size_t chunk_set_size = info.first.size();
+        size_t remainder_size = info.second;
+        int chunk_idx = ud.file_off_idx();
+        size_t write_len =
+            chunk_idx == chunk_set_size - 1
+                ? remainder_size == 0 ? PAGE_SIZE : remainder_size
+                : PAGE_SIZE;
+        io_uring_prep_write(sqe, ud.dest_fd(),
+                            data_buff->get_buff_page_addr(ud.buff_idx()),
+                            write_len, ud.file_off_idx() * PAGE_SIZE);
+        ud.read_done(true);
+        io_uring_sqe_set_data(sqe, (void *)ud.get_data());
+        io_uring_submit(&ring);
+        io_uring_cqe_seen(&ring, current_cqe);
       } else if (!ud.write_done()) {
         /**
          *
          *
          */
         //  std::shared_lock<std::shared_timed_mutex> read_lock(m)
-        struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+        // struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
 
-      } else {
+        // } else {
         /**
          * closing file decriptors, return the data buffers. Remove block num
          * from correspoding fd pairs if the fd map is empty, great success not
          * implementing retry for mow
          */
-        {
-          sizhan::write_lock lock(m);
-          data_buff->release_buff_page_by_idx(ud.buff_idx());
-        }
+        assert(current_cqe->res >=0);
+        io_uring_cqe_seen(&ring, current_cqe);
+        // {
+          // sizhan::write_lock lock(m);  
+        data_buff->release_buff_page_by_idx(ud.buff_idx());
+        // }
         if (check_file_done.find(ud.dest_fd()) != check_file_done.end()) {
-          std::unordered_set<int> file_offset_set = check_file_done[ud.dest_fd()];
+          std::unordered_set<int> file_offset_set =
+              check_file_done[ud.dest_fd()];
           file_offset_set.erase(ud.file_off_idx());
           if (file_offset_set.empty()) {
             close(ud.src_fd());
             close(ud.dest_fd());
           }
           check_file_done.erase(ud.dest_fd());
-          if (check_file_done.empty()) return;
+          if (check_file_done.empty())
+            return;
         }
       }
     }
@@ -273,36 +266,16 @@ int main(int argc, char *argv[]) {
 
   init_folder_files(src_abs_path, dest_abs_path);
   cqe_batch = new struct io_uring_cqe[NUM_BUFF_PAGES];
-  // io_uring_submit(&ring);
 
-  // struct io_uring_cqe *cqe;
-  // int ret = io_uring_wait_cqe(&ring, &cqe);
+  submit_read(data_buff); 
+  io_uring_submit(&ring);
 
-  // if (ret < 0) {
-  //   perror("io_uring_wait_cqe");
-  //   return 1;
-  // }
-
-  // if (cqe->res < 0) {
-  //   /* The system call invoked asynchonously failed */
-  //   return 1;
-  // }
-
-  // /* Retrieve user data from CQE */
-  // struct file_info *fi = (file_info *)io_uring_cqe_get_data(cqe);
-  // /* process this request here */
-
-  // // printf("buff_addr in completion: %p\n", fi->buf);
-  // printf("res in cqe: %d\n", cqe->res);
-  // /* Mark this completion as seen */
-  // io_uring_cqe_seen(&ring, cqe);
   std::thread handle_write_thread(handle_write, &data_buff);
   handle_write_thread.join();
 
   delete st;
   io_uring_queue_exit(&ring);
-  // delete[] file_infos;
-  delete[] cqe_batch;
+  // delete[] cqe_batch;
 
   return EXIT_SUCCESS;
 

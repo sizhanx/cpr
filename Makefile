@@ -16,3 +16,8 @@ buff_alloc: buff_alloc.cpp buff_alloc.hpp
 cp_r: user_data buff_alloc cp_r.cpp
 	$(CC) $(FLAGS) -o cp_r cp_r.cpp buff_alloc.o user_data.o -luring -lpthread
 
+gdb: clean cp_r
+	gdb --args ./cp_r test dest
+
+run: clean cp_r
+	./cp_r test dest
