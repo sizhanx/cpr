@@ -21,7 +21,7 @@ buff_alloc::buff_alloc(size_t sz)
 
 buff_alloc::~buff_alloc() { free(this->buff); }
 
-void *buff_alloc::alloc_buf_page() {
+void *buff_alloc::alloc_buff_page() {
   if (this->free_page_list.empty())
     return nullptr;
   void *free_page = this->free_page_list.front();
@@ -29,13 +29,13 @@ void *buff_alloc::alloc_buf_page() {
   return free_page;
 }
 
-int buff_alloc::get_buf_page_idx(void* ptr) {
+int buff_alloc::get_buff_page_idx(void *ptr) {
   assert(ptr >= this->buff);
   assert(ptr < (void *)((size_t)this->buff + total_size));
-  return (int) ((size_t) ((size_t) ptr - (size_t) this->buff ) / PAGE_SIZE);
+  return (int)((size_t)((size_t)ptr - (size_t)this->buff) / PAGE_SIZE);
 }
 
-void buff_alloc::relese_buf_page(void *ptr) {
+void buff_alloc::relese_buff_page(void *ptr) {
   assert(ptr >= this->buff);
   assert(ptr < (void *)((size_t)this->buff + total_size));
   size_t diff = ((size_t)ptr) % PAGE_SIZE;
@@ -43,6 +43,8 @@ void buff_alloc::relese_buf_page(void *ptr) {
   this->free_page_list.push_back(rounded_ptr);
 }
 
-bool buff_alloc::empty() {
-  return this->free_page_list.empty();
+void buff_alloc::release_buff_page_by_idx(int idx) {
+  this->get_buff_page_idx((void *)((size_t)(this->buff) + idx * PAGE_SIZE));
 }
+
+bool buff_alloc::empty() { return this->free_page_list.empty(); }

@@ -39,8 +39,9 @@ struct stat *st;
 struct io_uring ring;
 std::unordered_map<std::pair<int, int>,
                    std::pair<std::unordered_set<int>, size_t>, pair_hash>
-    fd_to_buf_idx;
-struct io_uring_cqe* cqe_batch;
+    fd_to_file_idx;
+std::unordered_map<int, std::unordered_set<int>> check_file_done;
+struct io_uring_cqe *cqe_batch;
 std::shared_timed_mutex m;
 const int FILE_MODE = S_IRWXU;
 const size_t QUEUE_DEPTH = 10;
@@ -104,15 +105,16 @@ void init_folder_files(const std::string &src_path,
     fallocate(dest_file_fd, 0, 0, st->st_mode);
     int src_file_fd = open(src_path.c_str(), O_RDONLY);
     while (remaining_file_sz > 0) {
-      fd_to_buf_idx[{src_file_fd, dest_file_fd}].first.insert(chunk_idx);
+      fd_to_file_idx[{src_file_fd, dest_file_fd}].first.insert(chunk_idx);
+      check_file_done[dest_file_fd].insert(chunk_idx);
       chunk_idx++;
       if (remaining_file_sz < PAGE_SIZE) {
-        fd_to_buf_idx[{src_file_fd, dest_file_fd}].second = remaining_file_sz;
+        fd_to_file_idx[{src_file_fd, dest_file_fd}].second = remaining_file_sz;
         remaining_file_sz = 0;
       } else {
         remaining_file_sz -= PAGE_SIZE;
         if (remaining_file_sz == 0) {
-          fd_to_buf_idx[{src_file_fd, dest_file_fd}].second = 0;
+          fd_to_file_idx[{src_file_fd, dest_file_fd}].second = 0;
         }
       }
     }
@@ -151,7 +153,7 @@ void init_folder_files(const std::string &src_path,
  *
  */
 void submit_read(buff_alloc &data_buff) {
-  for (auto fd_it : fd_to_buf_idx) {
+  for (auto fd_it : fd_to_file_idx) {
 
     auto fd_pair = fd_it.first;
     auto fd_val = fd_it.second;
@@ -163,7 +165,7 @@ void submit_read(buff_alloc &data_buff) {
       void *page = nullptr;
     retry_submit_read : { // scope for RAII lock
       sizhan::write_lock lock(m);
-      page = data_buff.alloc_buf_page();
+      page = data_buff.alloc_buff_page();
       if (page == nullptr) {
         io_uring_submit(&ring);
         goto retry_submit_read;
@@ -177,7 +179,7 @@ void submit_read(buff_alloc &data_buff) {
       struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
       io_uring_prep_read(sqe, fd_pair.first, page, read_len, read_off);
       user_data ud(fd_pair.first, fd_pair.second,
-                   data_buff.get_buf_page_idx(page), chunk_idx, false, false);
+                   data_buff.get_buff_page_idx(page), chunk_idx, false, false);
       io_uring_sqe_set_data(sqe, (void *)ud.get_data());
     }
   }
@@ -188,20 +190,20 @@ void submit_read(buff_alloc &data_buff) {
  * redirect reads to writes
  *
  */
-void handle_write(buff_alloc &data_buff) {
+void handle_write(buff_alloc *data_buff) {
   while (true /*shoud be some condition, but true for now*/) {
-    int num_recvd_cqe = io_uring_peek_batch_cqe(&ring, &cqe_batch, NUM_BATCH_RECV);
+    int num_recvd_cqe =
+        io_uring_peek_batch_cqe(&ring, &cqe_batch, NUM_BATCH_RECV);
     for (int i = 0; i < num_recvd_cqe; i++) {
       struct io_uring_cqe *current_cqe = cqe_batch + i;
-      user_data ud((uint64_t) io_uring_cqe_get_data(current_cqe));
+      user_data ud((uint64_t)io_uring_cqe_get_data(current_cqe));
       if (!ud.read_done()) {
         /**
          * Check the return value
          *
          */
         //  std::shared_lock<std::shared_timed_mutex> read_lock(m);
-        struct io_uring_sqe* sqe = io_uring_get_sqe(&ring);
-
+        struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
 
       } else if (!ud.write_done()) {
         /**
@@ -209,6 +211,7 @@ void handle_write(buff_alloc &data_buff) {
          *
          */
         //  std::shared_lock<std::shared_timed_mutex> read_lock(m)
+        struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
 
       } else {
         /**
@@ -218,14 +221,21 @@ void handle_write(buff_alloc &data_buff) {
          */
         {
           sizhan::write_lock lock(m);
-
+          data_buff->release_buff_page_by_idx(ud.buff_idx());
         }
-
+        if (check_file_done.find(ud.dest_fd()) != check_file_done.end()) {
+          std::unordered_set<int> file_offset_set = check_file_done[ud.dest_fd()];
+          file_offset_set.erase(ud.file_off_idx());
+          if (file_offset_set.empty()) {
+            close(ud.src_fd());
+            close(ud.dest_fd());
+          }
+          check_file_done.erase(ud.dest_fd());
+          if (check_file_done.empty()) return;
+        }
       }
     }
   }
-handle_write_done:
-  return;
 }
 
 int main(int argc, char *argv[]) {
@@ -286,7 +296,7 @@ int main(int argc, char *argv[]) {
   // printf("res in cqe: %d\n", cqe->res);
   // /* Mark this completion as seen */
   // io_uring_cqe_seen(&ring, cqe);
-  std::thread handle_write_thread(handle_write);
+  std::thread handle_write_thread(handle_write, &data_buff);
   handle_write_thread.join();
 
   delete st;
