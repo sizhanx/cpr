@@ -135,8 +135,8 @@ void submit_read(buff_alloc &data_buff, struct io_uring *ring,
                             : PAGE_SIZE;
       off_t read_off = chunk_idx * PAGE_SIZE;
       io_uring_prep_read(sqe, fd_pair.first, page, read_len, read_off);
-      printf("fd pair in submit read: {%d, %d}\n", fd_pair.first,
-             fd_pair.second);
+      // printf("fd pair in submit read: {%d, %d}\n", fd_pair.first,
+      //        fd_pair.second);
       user_data ud(fd_pair.first, fd_pair.second,
                    data_buff.get_buff_page_idx(page), chunk_idx, false, false);
       io_uring_sqe_set_data(sqe, (void *)ud.get_data());
@@ -157,7 +157,7 @@ void handle_write(
       struct io_uring_cqe *current_cqe = cqe_buff[i];
       user_data ud((uint64_t)io_uring_cqe_get_data(current_cqe));
       if (!ud.read_done()) {
-        printf("receiving read completion: %d\n", ud.dest_fd());
+        // printf("receiving read completion: %d\n", ud.dest_fd());
         sqe = io_uring_get_sqe(ring);
         if (sqe == nullptr) {
           perror("stuck in getting sqe for writes");
@@ -172,7 +172,7 @@ void handle_write(
             chunk_idx == chunk_set_size - 1
                 ? remainder_size == 0 ? PAGE_SIZE : remainder_size
                 : PAGE_SIZE;
-        printf("prepping write for %d\n", ud.dest_fd());
+        // printf("prepping write for %d\n", ud.dest_fd());
         io_uring_prep_write(sqe, ud.dest_fd(),
                             data_buff->get_buff_page_addr(ud.buff_idx()),
                             write_len, ud.file_off_idx() * PAGE_SIZE);
@@ -180,7 +180,7 @@ void handle_write(
         io_uring_sqe_set_data(sqe, (void *)ud.get_data());
         io_uring_cqe_seen(ring, current_cqe);
         num_writes_issued++;
-        printf("total reads: %lu, num_writes_issued: %lu\n",total_reads, num_writes_issued);
+        // printf("total reads: %lu, num_writes_issued: %lu\n",total_reads, num_writes_issued);
         if (total_reads == num_writes_issued)
           io_uring_submit(ring);
       } else if (!ud.write_done()) {
@@ -194,14 +194,14 @@ void handle_write(
         if (check_file_done.find(ud.dest_fd()) != check_file_done.end()) {
           std::unordered_set<int> file_offset_set =
               check_file_done[ud.dest_fd()];
-          printf("completing %lu for file %d\n", ud.file_off_idx(),
-                 ud.dest_fd());
+          // printf("completing %lu for file %d\n", ud.file_off_idx(),
+          //        ud.dest_fd());
           file_offset_set.erase(ud.file_off_idx());
           if (file_offset_set.empty()) {
             close(ud.src_fd());
             close(ud.dest_fd());
           }
-          printf("closing dest file: %d\n", ud.dest_fd());
+          // printf("closing dest file: %d\n", ud.dest_fd());
           check_file_done.erase(ud.dest_fd());
           if (check_file_done.empty())
             return;
@@ -209,17 +209,6 @@ void handle_write(
       }
     }
   }
-}
-
-void test(buff_alloc *data_buff, struct io_uring *ring, struct io_uring_cqe *cqe_buff,
-    std::unordered_map<std::pair<int, int>,
-                       std::pair<std::unordered_set<int>, size_t>, pair_hash>
-        *fd_to_file_idx,
-    std::unordered_map<int, std::unordered_set<int>> *check_file_done, size_t total_reads) {
- struct io_uring_sqe* s = nullptr;
-  while ((s = io_uring_get_sqe(ring)) != nullptr) {
-    printf("getting sqe!\n");
-  } 
 }
 
 int main(int argc, char *argv[]) {
