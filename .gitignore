@@ -5,3 +5,7 @@ cat_liburing
 cat_liburing.c
 dest/*
 test/*
+test_many_small_files
+test_huge_files
+test_sizhan
+test_many_folders

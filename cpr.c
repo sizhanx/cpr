@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include <liburing.h>
 
-#define QUEUE_DEPTH 4
+#define QUEUE_DEPTH 8
 #define BLOCK_SZ    4096
 
 const int FILE_MODE = S_IRWXU;
