@@ -293,7 +293,7 @@ int main(int argc, char *argv[]) {
   struct io_uring_params params;
   memset(&params, 0, sizeof(params));
   params.flags |= IORING_SETUP_SQPOLL;
-  params.sq_thread_idle = 20000;
+  params.sq_thread_idle = 2000;
   io_uring_queue_init_params(QUEUE_DEPTH * 2, &ring, &params);
 
   create_folders(src_abs_path, dest_abs_path);
