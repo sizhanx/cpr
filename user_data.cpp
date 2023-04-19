@@ -14,7 +14,7 @@ user_data::user_data(int src_fd, int dest_fd, size_t buff_idx,
   this->data |= (((int64_t)dest_fd << 42) & 0x1FFC0000000000);
   this->data |= (((uint64_t)buff_idx << 22) & 0x3FFFFC00000);
   this->data |= (((uint64_t)file_off_idx << 2) & 0x3FFFFC);
-  this->data |= (((uint64_t)dest_fd << 1) & 0x2);
+  this->data |= (((uint64_t)read_done << 1) & 0x2);
   this->data |= (write_done & 0x1);
 }
 
