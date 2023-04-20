@@ -1,7 +1,7 @@
 import string
 import random
 
-for i in range(1000, 10000):
+for i in range(15000):
     filename = "test_many_small_files/small_file" + str(i) + ".txt"
     f = open(filename, "w")
     line = ""

@@ -9,9 +9,9 @@
 #include <unistd.h>
 #include <liburing.h>
 
-#define QUEUE_DEPTH   4
-#define BLOCK_SZ      65536
-#define MAX_NUM_FILES 16384
+#define QUEUE_DEPTH   8
+#define BLOCK_SZ      131072
+#define MAX_NUM_FILES 65536
 
 const int FILE_MODE = S_IRWXU;
 struct stat sb;
@@ -318,6 +318,7 @@ int main(int argc, char *argv[]) {
       return 1;
     }
     struct file_info *fi = io_uring_cqe_get_data(cqe);
+    io_uring_cqe_seen(&ring, cqe);
 
     if (fi->is_write) {
       // printf("write completed\n\n");
@@ -346,7 +347,6 @@ int main(int argc, char *argv[]) {
       fflush(stdout);
       submit_write_request(fi->write_fd_index, fi);
     }
-    io_uring_cqe_seen(&ring, cqe);
 
   }
 

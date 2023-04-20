@@ -9,3 +9,4 @@ test_many_small_files
 test_huge_files
 test_sizhan
 test_many_folders
+test_combination
