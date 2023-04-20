@@ -9,9 +9,9 @@
 #include <unistd.h>
 #include <liburing.h>
 
-#define QUEUE_DEPTH   8
-#define BLOCK_SZ      131072
-#define MAX_NUM_FILES 65536
+#define QUEUE_DEPTH   16
+#define BLOCK_SZ      65536
+#define MAX_NUM_FILES 32768
 
 const int FILE_MODE = S_IRWXU;
 struct stat sb;
@@ -298,7 +298,7 @@ int main(int argc, char *argv[]) {
 
   create_folders(src_abs_path, dest_abs_path);
 
-  int ret = io_uring_register_files(&ring, fd_arr, MAX_NUM_FILES);
+  int ret = io_uring_register_files(&ring, fd_arr, next_index);
   if(ret) {
       fprintf(stderr, "Error registering buffers: %s", strerror(-ret));
       return 1;
@@ -341,10 +341,16 @@ int main(int argc, char *argv[]) {
 
         io_uring_submit(&ring);
       }
+      if (fi->num_blocks == 1) {
+        close(fd_arr[fi->write_fd_index]);
+      }
       free(fi);
     } else {
       // printf("%.100s\n\n", (char *) (fi->iovecs[0].iov_base));
       fflush(stdout);
+      if (fi->num_blocks == 1) {
+        close(fd_arr[fi->read_fd_index]);
+      }
       submit_write_request(fi->write_fd_index, fi);
     }
 
@@ -352,6 +358,9 @@ int main(int argc, char *argv[]) {
 
   io_uring_queue_exit(&ring);
 
+  // for (int i = 0; i < next_index; i++) {
+  //   close(fd_arr[i]);
+  // }
   free(src_abs_path);
   free(dest_abs_path);
   free(main_buffer);
