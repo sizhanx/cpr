@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+std::shared_timed_mutex m;
+
 buff_alloc::buff_alloc(size_t sz)
     : total_size(sz),
       total_pages((sz % PAGE_SIZE == 0 ? 0 : 1) + (sz / PAGE_SIZE)) {
@@ -23,8 +25,8 @@ buff_alloc::buff_alloc(size_t sz)
 buff_alloc::~buff_alloc() { free(this->buff); }
 
 void *buff_alloc::alloc_buff_page() {
+  sizhan::write_lock l(m);
   void *free_page = nullptr;
-  std::lock_guard<std::shared_timed_mutex> write_lock(m);
   if (this->free_page_list.empty())
     return nullptr;
   free_page = this->free_page_list.front();
@@ -43,10 +45,10 @@ void* buff_alloc::get_buff_page_addr(int idx) {
 }
 
 void buff_alloc::relese_buff_page(void *ptr) {
+  sizhan::write_lock l(m);
   assert(ptr >= this->buff);
   assert(ptr < (void *)((size_t)this->buff + total_size));
 
-  std::lock_guard<std::shared_timed_mutex> write_lock(m);
   size_t diff = ((size_t)ptr) % PAGE_SIZE;
   void *rounded_ptr = (void *)((size_t)ptr - diff);
   this->free_page_list.push_back(rounded_ptr);

@@ -1,43 +1,45 @@
-// #define _GNU_SOURCE
+#include <cassert>
+#include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <dirent.h>
 #include <fcntl.h>
 #include <liburing.h>
+#include <memory>
+#include <shared_mutex>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
 #include <unordered_map>
-#include <unordered_set>
-#include <cassert>
+#include <vector>
 
 #include "buff_alloc.hpp"
-#include "user_data.hpp"
+#include "common.hpp"
 
-const uint64_t ONE = 1;
 const int FILE_MODE = S_IRWXU;
-
-constexpr size_t DATA_BUFF_SIZE = ONE << 29;
-
 const unsigned IO_URING_QUEUE_DEPTH = 100;
 const unsigned IO_URING_FLAGS = 0;
 const unsigned IO_URING_CQE_PEEK_COUNT = 100;
+constexpr size_t TWO_GB = GB << 1;
+constexpr size_t MB_256 = GB >> 2;
 
-struct pair_hash {
-  template <class T1, class T2>
-  std::size_t operator()(const std::pair<T1, T2> &p) const {
-    auto h1 = std::hash<T1>{}(p.first);
-    auto h2 = std::hash<T2>{}(p.second);
-    return h1 ^ h2;
-  }
+
+struct cp_task {
+  void *buff_addr;
+  const off_t file_off;
+  const size_t op_len;
+  const int src_fd;
+  const int dest_fd;
+  bool read_done;
+  cp_task() : file_off(0), op_len(0), src_fd(-1), dest_fd(-1) {}
+  cp_task(int src_fd, int dest_fd, off_t file_off, size_t op_len)
+      : buff_addr(nullptr), file_off(file_off), op_len(op_len), src_fd(src_fd),
+        dest_fd(dest_fd), read_done(false) {}
+  void set_read_done(bool val) { this->read_done = val; }
 };
 
-std::unordered_map<std::pair<int, int>,
-                     std::pair<std::unordered_set<int>, size_t>, pair_hash>
-      fd_to_file_idx;
-  std::unordered_map<int, std::unordered_set<int>> check_file_done;
-
-struct io_uring_cqe** cqe_buff = nullptr;
+std::shared_timed_mutex mtx;
 
 bool is_special_path(const std::string &path) {
   if (path == "." || path == "..")
@@ -50,8 +52,11 @@ std::string get_last_dir(const std::string path) {
   return path.substr(last_slash_pos + 1, path.size() - last_slash_pos - 1);
 }
 
-void init_folder_files(
-    const std::string &src_path, const std::string &dest_path) {
+void init_folder_files(const std::string &src_path,
+                       const std::string &dest_path,
+                       std::vector<cp_task *> &cp_tasks,
+                       std::deque<cp_task *> &read_queue,
+                       std::unordered_map<int, size_t> &check_done) {
   struct stat st;
   if (stat(src_path.c_str(), &st) != 0) {
     return;
@@ -79,136 +84,117 @@ void init_folder_files(
       std::string new_src_path = std::string(src_path);
       new_src_path += '/';
       new_src_path += src_dir_entry->d_name;
-      init_folder_files(new_src_path, new_dest_path);
+      init_folder_files(new_src_path, new_dest_path, cp_tasks, read_queue,
+                        check_done);
     }
     closedir(src_dir);
   } else if (S_ISREG(st.st_mode)) {
     size_t remaining_file_sz = st.st_size;
-    int chunk_idx = 0;
     int dest_file_fd = creat(new_dest_path.c_str(), FILE_MODE);
     fallocate(dest_file_fd, 0, 0, st.st_size);
     int src_file_fd = open(src_path.c_str(), O_RDONLY);
     while (remaining_file_sz > 0) {
-      fd_to_file_idx[{src_file_fd, dest_file_fd}].first.insert(chunk_idx);
-      check_file_done[dest_file_fd].insert(chunk_idx);
-      chunk_idx++;
+      struct cp_task *task =
+          new struct cp_task(src_file_fd, dest_file_fd,
+                             st.st_size - remaining_file_sz, remaining_file_sz);
+      cp_tasks.push_back(task);
+      read_queue.push_back(task);
+      check_done[dest_file_fd]++;
       if (remaining_file_sz < PAGE_SIZE) {
-        fd_to_file_idx[{src_file_fd, dest_file_fd}].second = remaining_file_sz;
         remaining_file_sz = 0;
       } else {
         remaining_file_sz -= PAGE_SIZE;
-        if (remaining_file_sz == 0) {
-          fd_to_file_idx[{src_file_fd, dest_file_fd}].second = 0;
-        }
       }
     }
   }
 }
 
-void submit_read(buff_alloc &data_buff, struct io_uring *ring,
-                 size_t& read_submitted) {
-
-  for (auto fd_it : fd_to_file_idx) {
-
-    auto fd_pair = fd_it.first;
-    auto fd_val = fd_it.second;
-    auto chunk_set = fd_val.first;
-    auto remainder_size = fd_val.second;
-    size_t chunk_set_size = chunk_set.size();
-
-    for (int chunk_idx : chunk_set) {
-      void *page = nullptr;
-      struct io_uring_sqe *sqe = nullptr;
-    retry_submit_read:
-
-      page = data_buff.alloc_buff_page();
-      if (page == nullptr) {
-        goto retry_submit_read;
-      }
-      sqe = io_uring_get_sqe(ring);
+void sqe_submitter_worker(buff_alloc &buff_allocator, struct io_uring *ring,
+                          std::deque<struct cp_task *> &read_queue,
+                          std::deque<struct cp_task *> &write_queue,
+                          std::unordered_map<int, size_t> &check_done) {
+  // return;
+  // sizhan::write_lock l(mtx);
+  while (!check_done.empty()) {
+    if (!write_queue.empty()) {
+      struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
       if (sqe == nullptr) {
-        goto retry_submit_read;
+        io_uring_submit(ring);
+        continue;
+      }
+      struct cp_task *task_ptr = nullptr;
+      {
+        sizhan::write_lock l(mtx);
+        task_ptr = write_queue.front();
+        write_queue.pop_front();
       }
 
-      size_t read_len = chunk_idx == chunk_set_size - 1
-                            ? remainder_size == 0 ? PAGE_SIZE : remainder_size
-                            : PAGE_SIZE;
-      off_t read_off = chunk_idx * PAGE_SIZE;
-      io_uring_prep_read(sqe, fd_pair.first, page, read_len, read_off);
-      // printf("fd pair in submit read: {%d, %d}\n", fd_pair.first,
-      //        fd_pair.second);
-      user_data ud(fd_pair.first, fd_pair.second,
-                   data_buff.get_buff_page_idx(page), chunk_idx, false, false);
-      io_uring_sqe_set_data(sqe, (void *)ud.get_data());
-      read_submitted++;
+      io_uring_prep_write(sqe, task_ptr->dest_fd, task_ptr->buff_addr,
+                          task_ptr->op_len, task_ptr->file_off);
+      io_uring_sqe_set_data(sqe, task_ptr);
+
+      if (write_queue.empty())
+        io_uring_submit(ring);
+    }
+    if (!read_queue.empty()) {
+      void *page = buff_allocator.alloc_buff_page();
+      if (page == nullptr) {
+        io_uring_submit(ring);
+        continue;
+      }
+      struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+      if (sqe == nullptr) {
+        buff_allocator.relese_buff_page(page);
+        io_uring_submit(ring);
+        continue;
+      }
+      auto task_ptr = read_queue.front();
+      task_ptr->buff_addr = page;
+      assert(!task_ptr->read_done);
+      read_queue.pop_front();
+
+      io_uring_prep_read(sqe, task_ptr->src_fd, page, task_ptr->op_len,
+                         task_ptr->file_off);
+      io_uring_sqe_set_data(sqe, task_ptr);
+
+      if (read_queue.empty())
+        io_uring_submit(ring);
     }
   }
 }
 
-void handle_write(
-    buff_alloc *data_buff, struct io_uring *ring,  size_t total_reads) {
-  size_t num_writes_issued;
-  struct io_uring_sqe *sqe = nullptr;
-  while (true /*shoud be some condition, but true for now*/) {
-    
-    int num_recvd_cqe =
-        io_uring_peek_batch_cqe(ring, cqe_buff, IO_URING_CQE_PEEK_COUNT);
-    for (int i = 0; i < num_recvd_cqe; i++) {
-      struct io_uring_cqe *current_cqe = cqe_buff[i];
-      user_data ud((uint64_t)io_uring_cqe_get_data(current_cqe));
-      if (!ud.read_done()) {
-        // printf("receiving read completion: %d\n", ud.dest_fd());
-        sqe = io_uring_get_sqe(ring);
-        if (sqe == nullptr) {
-          perror("stuck in getting sqe for writes");
-          io_uring_submit(ring);
-          continue;
-        }
-        auto info = fd_to_file_idx[{ud.src_fd(), ud.dest_fd()}];
-        size_t chunk_set_size = info.first.size();
-        size_t remainder_size = info.second;
-        int chunk_idx = ud.file_off_idx();
-        size_t write_len =
-            chunk_idx == chunk_set_size - 1
-                ? remainder_size == 0 ? PAGE_SIZE : remainder_size
-                : PAGE_SIZE;
-        // printf("prepping write for %d\n", ud.dest_fd());
-        io_uring_prep_write(sqe, ud.dest_fd(),
-                            data_buff->get_buff_page_addr(ud.buff_idx()),
-                            write_len, ud.file_off_idx() * PAGE_SIZE);
-        ud.read_done(true);
-        io_uring_sqe_set_data(sqe, (void *)ud.get_data());
-        io_uring_cqe_seen(ring, current_cqe);
-        num_writes_issued++;
-        // printf("total reads: %lu, num_writes_issued: %lu\n",total_reads, num_writes_issued);
-        if (total_reads == num_writes_issued)
-          io_uring_submit(ring);
-      } else if (!ud.write_done()) {
+void cqe_handler_worker(struct io_uring_cqe **cqe_buff, struct io_uring *ring,
+                        std::unordered_map<int, size_t> &check_done,
+                        std::deque<struct cp_task *> &write_queue, buff_alloc& buff_allocator) {
+  // int* b = (int*) 0x99999;
+  // int a = *((int*) b - 0x99999);
 
-        assert(current_cqe->res >= 0);
-        io_uring_cqe_seen(ring, current_cqe);
-        // {
-        // sizhan::write_lock lock(m);
-        data_buff->release_buff_page_by_idx(ud.buff_idx());
-        // }
-        if (check_file_done.find(ud.dest_fd()) != check_file_done.end()) {
-          std::unordered_set<int> file_offset_set =
-              check_file_done[ud.dest_fd()];
-          // printf("completing %lu for file %d\n", ud.file_off_idx(),
-          //        ud.dest_fd());
-          file_offset_set.erase(ud.file_off_idx());
-          if (file_offset_set.empty()) {
-            close(ud.src_fd());
-            close(ud.dest_fd());
-          }
-          // printf("closing dest file: %d\n", ud.dest_fd());
-          check_file_done.erase(ud.dest_fd());
-          if (check_file_done.empty())
-            return;
+  while (!check_done.empty()) {
+    int num_cqes =
+        io_uring_peek_batch_cqe(ring, cqe_buff, IO_URING_CQE_PEEK_COUNT);
+    for (int i = 0; i < num_cqes; i++) {
+      struct io_uring_cqe *current_cqe = cqe_buff[i];
+      struct cp_task *task_ptr =
+          (struct cp_task *)io_uring_cqe_get_data(current_cqe);
+      // break;
+      if (task_ptr->read_done) {
+        int dest_fd = task_ptr->dest_fd;
+        check_done[dest_fd]--;
+        buff_allocator.relese_buff_page(task_ptr->buff_addr);
+        if (check_done[dest_fd] == 0) {
+          check_done.erase(dest_fd);
+          close(dest_fd);
+          close(task_ptr->src_fd);
         }
+      } else {
+        sizhan::write_lock l(mtx);
+        task_ptr->set_read_done(true);
+        write_queue.push_front(task_ptr);
       }
+      io_uring_cqe_seen(ring, current_cqe);
     }
   }
+  // printf("worker function is actually done\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -218,53 +204,59 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
 
-  std::string src_abs_path = std::string(argv[1]);
-  std::string dest_abs_path = std::string(argv[2]);
+  std::string src_path = std::string(argv[1]);
+  std::string dest_path = std::string(argv[2]);
 
   struct stat
       st; // this stat struct is only used for checking top_level dest folder
-  struct io_uring* ring;
-  size_t read_submitted = 0;
 
-  if (stat(dest_abs_path.c_str(), &st) != 0) {
-    if (mkdir(dest_abs_path.c_str(), FILE_MODE) != 0) {
+  std::vector<struct cp_task *> cp_tasks;
+  std::deque<struct cp_task *> read_queue;
+  std::deque<struct cp_task *> write_queue;
+  std::unordered_map<int, size_t> check_done;
+  struct io_uring *ring;
+
+  ring = new struct io_uring;
+
+  if (stat(dest_path.c_str(), &st) != 0) {
+    if (mkdir(dest_path.c_str(), FILE_MODE) != 0) {
       perror("Failed to make top-level dest directory!");
       // goto error;
       exit(-1);
     }
   }
 
-  init_folder_files(src_abs_path, dest_abs_path);
+  init_folder_files(src_path, dest_path, cp_tasks, read_queue, check_done);
 
-  ring = new struct io_uring;
+  io_uring_queue_init(IO_URING_QUEUE_DEPTH, ring, 0);
 
-  io_uring_queue_init(IO_URING_QUEUE_DEPTH, ring, IO_URING_FLAGS);
+  buff_alloc buff_allocator(MB_256);
 
-  // cqe_buff = new struct io_uring_cqe[IO_URING_CQE_PEEK_COUNT];
-  cqe_buff = (struct io_uring_cqe**) malloc(sizeof(struct io_uring_cqe*) * IO_URING_CQE_PEEK_COUNT);
+  struct io_uring_cqe **cqe_buff = (struct io_uring_cqe **)malloc(
+      sizeof(struct io_uring_cqe *) * IO_URING_CQE_PEEK_COUNT);
+  // new struct io_uring_cqe*[IO_URING_CQE_PEEK_COUNT];
 
-  buff_alloc data_buff(DATA_BUFF_SIZE);
+  // struct io_uring_cqe **double_cqe_buff = &cqe_buff;
 
-  submit_read(data_buff, ring, read_submitted);
-  io_uring_submit(ring);
+  // auto t = std::thread(sqe_submitter_worker, std::ref(buff_allocator), ring,
+  // std::ref(read_queue), std::ref(write_queue),
+  //                      std::ref(check_done));
 
-  // struct io_uring_sqe* s = nullptr;
-  // while ((s = io_uring_get_sqe(ring)) != nullptr) {
-  //   printf("getting sqe!\n");
-  // }
-  // io_uring_get_sqe(ring);
+  auto t = std::thread(cqe_handler_worker, cqe_buff, ring, std::ref(check_done),
+                       std::ref(write_queue), std::ref(buff_allocator));
 
-  std::thread t(handle_write, &data_buff, ring, read_submitted);
+  sqe_submitter_worker(buff_allocator, ring, read_queue, write_queue,
+                       check_done);
 
   t.join();
 
-  // std::thread te(test, &data_buff, ring, cqe_buff, &fd_to_file_idx, &check_file_done,read_submitted);
-  // te.join();
-
-  io_uring_queue_exit(ring);
+  for (struct cp_task *t : cp_tasks) {
+    delete t;
+  }
 
   delete ring;
-  // delete[] cqe_buff;
   free(cqe_buff);
+  io_uring_queue_exit(ring);
+
   return EXIT_SUCCESS;
 }

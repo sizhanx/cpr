@@ -6,7 +6,9 @@
 #include <deque>
 #include <shared_mutex>
 
-constexpr size_t PAGE_SIZE = ((uint64_t)1) << 12;
+#include "common.hpp"
+
+// constexpr size_t PAGE_SIZE = ((uint64_t)1) << 12;
 
 class buff_alloc {
 private:
