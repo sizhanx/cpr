@@ -217,7 +217,7 @@ void create_folders(char *src_path, char *dest_path) {
       return;
     }
     if (strcmp(src_last_dir, ".") == 0 || strcmp(src_last_dir, "..") == 0) return;
-    if (mkdirat(dest_dir_fd, src_last_dir, FILE_MODE) < 0) {
+    if (mkdirat(dest_dir_fd, src_last_dir, sb.st_mode) < 0) {
       perror("making dir at dest_path failed");
     }
     DIR *src_dir = opendir(src_path);
